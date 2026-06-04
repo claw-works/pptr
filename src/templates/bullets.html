@@ -1,0 +1,19 @@
+<div class="slide" style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'{{theme.bodyFont}}',sans-serif;background:{{theme.backgroundColor}};">
+  <div style="position:absolute;top:80px;left:120px;right:120px;">
+    <h2 style="font-size:48px;font-weight:700;color:{{theme.textColor}};margin:0;">{{content.title}}</h2>
+    <div style="width:60px;height:3px;background:{{theme.primaryColor}};margin-top:16px;border-radius:2px;"></div>
+  </div>
+  <div style="position:absolute;top:220px;bottom:80px;left:120px;right:120px;display:flex;flex-direction:column;justify-content:center;gap:32px;">
+    {% for item in content.items %}
+    <div style="display:flex;align-items:flex-start;gap:20px;">
+      <div style="width:44px;height:44px;border-radius:10px;background:{{theme.primaryColor}};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px;flex-shrink:0;">
+        {{loop.index}}
+      </div>
+      <div style="flex:1;">
+        {% if item.heading %}<div style="font-size:24px;font-weight:600;color:{{theme.textColor}};margin-bottom:6px;">{{item.heading}}</div>{% endif %}
+        <div style="font-size:20px;color:{{theme.textColor}};opacity:0.7;line-height:1.6;">{{item.text}}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>

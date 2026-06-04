@@ -1,0 +1,30 @@
+<div class="slide" style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'{{theme.bodyFont}}',sans-serif;background:{{theme.backgroundColor}};">
+  <div style="position:absolute;top:80px;left:120px;right:120px;">
+    <h2 style="font-size:48px;font-weight:700;color:{{theme.textColor}};margin:0;">{{content.title}}</h2>
+    <div style="width:60px;height:3px;background:{{theme.primaryColor}};margin-top:16px;border-radius:2px;"></div>
+  </div>
+  <div style="position:absolute;top:220px;bottom:80px;left:120px;right:120px;display:flex;gap:80px;">
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
+      {% if content.leftTitle %}<h3 style="font-size:28px;font-weight:600;color:{{theme.textColor}};margin:0 0 16px 0;">{{content.leftTitle}}</h3>{% endif %}
+      <div style="font-size:20px;color:{{theme.textColor}};opacity:0.8;line-height:1.8;">
+        {% for item in content.leftItems %}
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:{{theme.primaryColor}};margin-top:8px;flex-shrink:0;"></div>
+          <span>{{item}}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
+      {% if content.rightTitle %}<h3 style="font-size:28px;font-weight:600;color:{{theme.textColor}};margin:0 0 16px 0;">{{content.rightTitle}}</h3>{% endif %}
+      <div style="font-size:20px;color:{{theme.textColor}};opacity:0.8;line-height:1.8;">
+        {% for item in content.rightItems %}
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:{{theme.primaryColor}};margin-top:8px;flex-shrink:0;"></div>
+          <span>{{item}}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>

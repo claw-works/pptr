@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.*
+*.local
+.claude/
+web/node_modules/
+web/dist/
+bun.lockb

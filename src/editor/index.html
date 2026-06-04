@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PPT Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Header */
+    .header { height: 56px; background: #16213e; border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; padding: 0 20px; gap: 16px; flex-shrink: 0; }
+    .header h1 { font-size: 16px; font-weight: 600; color: #fff; }
+    .header .actions { margin-left: auto; display: flex; gap: 8px; }
+    .btn { padding: 8px 16px; border-radius: 6px; border: none; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-primary:hover { background: #5558e6; }
+    .btn-secondary { background: #2a2a4a; color: #e0e0e0; }
+    .btn-secondary:hover { background: #3a3a5a; }
+    .btn-ghost { background: transparent; color: #a0a0c0; }
+    .btn-ghost:hover { background: #2a2a4a; }
+
+    /* Main Layout */
+    .main { flex: 1; display: flex; overflow: hidden; }
+
+    /* Sidebar - slide list */
+    .sidebar { width: 200px; background: #16213e; border-right: 1px solid #2a2a4a; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+    .slide-thumb { border-radius: 6px; border: 2px solid transparent; cursor: pointer; overflow: hidden; transition: border-color 0.15s; position: relative; }
+    .slide-thumb.active { border-color: #6366f1; }
+    .slide-thumb:hover { border-color: #4a4a6a; }
+    .slide-thumb iframe { width: 1920px; height: 1080px; transform: scale(0.09); transform-origin: top left; pointer-events: none; border: none; }
+    .slide-thumb-wrapper { width: 172px; height: 97px; overflow: hidden; background: #fff; border-radius: 4px; }
+    .slide-thumb-index { position: absolute; bottom: 4px; left: 6px; font-size: 10px; color: #888; background: rgba(0,0,0,0.6); padding: 1px 5px; border-radius: 3px; }
+
+    /* Canvas */
+    .canvas { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px; background: #0f0f23; }
+    .canvas-frame { width: 100%; max-width: 960px; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+    .canvas-frame iframe { width: 1920px; height: 1080px; transform-origin: top left; border: none; }
+
+    /* Right Panel - editor */
+    .panel { width: 320px; background: #16213e; border-left: 1px solid #2a2a4a; overflow-y: auto; padding: 20px; flex-shrink: 0; }
+    .panel h3 { font-size: 13px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+    .panel-section { margin-bottom: 24px; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+    .field input, .field textarea, .field select { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #2a2a4a; background: #0f0f23; color: #e0e0e0; font-size: 13px; font-family: inherit; }
+    .field textarea { min-height: 60px; resize: vertical; }
+    .field input:focus, .field textarea:focus { outline: none; border-color: #6366f1; }
+
+    /* Theme colors */
+    .color-row { display: flex; gap: 8px; align-items: center; }
+    .color-swatch { width: 28px; height: 28px; border-radius: 6px; border: 2px solid #2a2a4a; cursor: pointer; }
+    .color-swatch input { opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+
+    /* Loading */
+    .loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="presentationTitle">PPT Editor</h1>
+    <div class="actions">
+      <button class="btn btn-ghost" onclick="generateNew()">AI 生成</button>
+      <button class="btn btn-secondary" onclick="exportAs('pdf')">导出 PDF</button>
+      <button class="btn btn-primary" onclick="exportAs('pptx')">导出 PPTX</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar" id="slideList"></div>
+    <div class="canvas">
+      <div class="canvas-frame">
+        <iframe id="previewFrame"></iframe>
+      </div>
+    </div>
+    <div class="panel" id="editPanel">
+      <div class="loading">选择一个 slide 开始编辑</div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+    let presentation = null;
+    let currentSlideIndex = 0;
+    let templates = [];
+
+    async function init() {
+      templates = await fetch(`${API}/api/templates`).then(r => r.json());
+      // Load demo presentation
+      const res = await fetch(`${API}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'AI PPT Generator 产品介绍' })
+      });
+      presentation = await res.json();
+      document.getElementById('presentationTitle').textContent = presentation.title;
+      renderSlideList();
+      selectSlide(0);
+    }
+
+    function renderSlideList() {
+      const container = document.getElementById('slideList');
+      container.innerHTML = presentation.slides.map((slide, i) => `
+        <div class="slide-thumb ${i === currentSlideIndex ? 'active' : ''}" onclick="selectSlide(${i})">
+          <div class="slide-thumb-wrapper">
+            <iframe srcdoc="${escapeHtml(renderSlideHtml(slide))}" scrolling="no"></iframe>
+          </div>
+          <span class="slide-thumb-index">${i + 1}</span>
+        </div>
+      `).join('');
+    }
+
+    function selectSlide(index) {
+      currentSlideIndex = index;
+      renderSlideList();
+      renderPreview();
+      renderEditPanel();
+    }
+
+    function renderPreview() {
+      const frame = document.getElementById('previewFrame');
+      const slide = presentation.slides[currentSlideIndex];
+      const html = renderSlideHtml(slide);
+      frame.srcdoc = html;
+      // Scale to fit
+      const container = frame.parentElement;
+      const scale = container.clientWidth / 1920;
+      frame.style.transform = `scale(${scale})`;
+    }
+
+    function renderEditPanel() {
+      const panel = document.getElementById('editPanel');
+      const slide = presentation.slides[currentSlideIndex];
+      const tmpl = templates.find(t => t.id === slide.templateId);
+
+      let fieldsHtml = '';
+      if (tmpl && tmpl.schema && tmpl.schema.properties) {
+        for (const [key, prop] of Object.entries(tmpl.schema.properties)) {
+          const value = slide.content[key];
+          if (Array.isArray(value)) {
+            fieldsHtml += renderArrayField(key, prop, value);
+          } else {
+            fieldsHtml += renderSimpleField(key, prop, value);
+          }
+        }
+      }
+
+      panel.innerHTML = `
+        <div class="panel-section">
+          <h3>模板</h3>
+          <div class="field">
+            <select onchange="changeTemplate(this.value)">
+              ${templates.map(t => `<option value="${t.id}" ${t.id === slide.templateId ? 'selected' : ''}>${t.name}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="panel-section">
+          <h3>内容</h3>
+          ${fieldsHtml}
+        </div>
+        <div class="panel-section">
+          <h3>主题</h3>
+          <div class="field">
+            <label>主色</label>
+            <div class="color-row">
+              <div class="color-swatch" style="background:${presentation.theme.primaryColor}">
+                <input type="color" value="${presentation.theme.primaryColor}" onchange="updateTheme('primaryColor', this.value)" />
+              </div>
+              <span style="font-size:12px;">${presentation.theme.primaryColor}</span>
+            </div>
+          </div>
+          <div class="field">
+            <label>背景色</label>
+            <div class="color-row">
+              <div class="color-swatch" style="background:${presentation.theme.backgroundColor}">
+                <input type="color" value="${presentation.theme.backgroundColor}" onchange="updateTheme('backgroundColor', this.value)" />
+              </div>
+              <span style="font-size:12px;">${presentation.theme.backgroundColor}</span>
+            </div>
+          </div>
+          <div class="field">
+            <label>文字色</label>
+            <div class="color-row">
+              <div class="color-swatch" style="background:${presentation.theme.textColor}">
+                <input type="color" value="${presentation.theme.textColor}" onchange="updateTheme('textColor', this.value)" />
+              </div>
+              <span style="font-size:12px;">${presentation.theme.textColor}</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel-section">
+          <button class="btn btn-secondary" style="width:100%;" onclick="addSlide()">+ 添加 Slide</button>
+          <button class="btn btn-ghost" style="width:100%;margin-top:8px;color:#e74c3c;" onclick="deleteSlide()">删除当前 Slide</button>
+        </div>
+      `;
+    }
+
+    function renderSimpleField(key, prop, value) {
+      const desc = prop.description || key;
+      const val = value ?? '';
+      if (typeof val === 'string' && val.length > 60) {
+        return `<div class="field"><label>${desc}</label><textarea oninput="updateContent('${key}', this.value)">${val}</textarea></div>`;
+      }
+      return `<div class="field"><label>${desc}</label><input type="text" value="${escapeAttr(String(val))}" oninput="updateContent('${key}', this.value)" /></div>`;
+    }
+
+    function renderArrayField(key, prop, value) {
+      if (!Array.isArray(value)) return '';
+      const items = value.map((item, i) => {
+        if (typeof item === 'string') {
+          return `<div class="field"><label>${key}[${i}]</label><input type="text" value="${escapeAttr(item)}" oninput="updateArrayItem('${key}', ${i}, this.value)" /></div>`;
+        } else if (typeof item === 'object') {
+          return Object.entries(item).map(([k, v]) =>
+            `<div class="field"><label>${key}[${i}].${k}</label><input type="text" value="${escapeAttr(String(v))}" oninput="updateArrayObjectItem('${key}', ${i}, '${k}', this.value)" /></div>`
+          ).join('');
+        }
+        return '';
+      }).join('');
+      return `<div style="margin-bottom:8px;font-size:12px;color:#6366f1;">${key} (${value.length} items)</div>${items}`;
+    }
+
+    function updateContent(key, value) {
+      presentation.slides[currentSlideIndex].content[key] = value;
+      renderPreview();
+      renderSlideList();
+    }
+
+    function updateArrayItem(key, index, value) {
+      presentation.slides[currentSlideIndex].content[key][index] = value;
+      renderPreview();
+      renderSlideList();
+    }
+
+    function updateArrayObjectItem(key, index, field, value) {
+      presentation.slides[currentSlideIndex].content[key][index][field] = value;
+      renderPreview();
+      renderSlideList();
+    }
+
+    function updateTheme(key, value) {
+      presentation.theme[key] = value;
+      renderPreview();
+      renderSlideList();
+      renderEditPanel();
+    }
+
+    function changeTemplate(templateId) {
+      presentation.slides[currentSlideIndex].templateId = templateId;
+      presentation.slides[currentSlideIndex].content = {};
+      renderPreview();
+      renderSlideList();
+      renderEditPanel();
+    }
+
+    function addSlide() {
+      presentation.slides.splice(currentSlideIndex + 1, 0, {
+        templateId: 'bullets',
+        content: { title: 'New Slide', items: [{ heading: 'Point 1', text: 'Edit this' }] }
+      });
+      selectSlide(currentSlideIndex + 1);
+    }
+
+    function deleteSlide() {
+      if (presentation.slides.length <= 1) return;
+      presentation.slides.splice(currentSlideIndex, 1);
+      if (currentSlideIndex >= presentation.slides.length) currentSlideIndex--;
+      selectSlide(currentSlideIndex);
+    }
+
+    async function exportAs(format) {
+      const btn = event.target;
+      btn.textContent = '导出中...';
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${API}/api/export`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...presentation, format })
+        });
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${presentation.title}.${format}`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } finally {
+        btn.textContent = `导出 ${format.toUpperCase()}`;
+        btn.disabled = false;
+      }
+    }
+
+    async function generateNew() {
+      const prompt = window.prompt('输入 PPT 主题：', 'AI 产品介绍');
+      if (!prompt) return;
+      const language = window.prompt('输出语言：', '中文') || '中文';
+
+      const titleEl = document.getElementById('presentationTitle');
+      titleEl.textContent = '生成中...';
+
+      try {
+        const res = await fetch(`${API}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, language })
+        });
+
+        if (res.headers.get('content-type')?.includes('text/event-stream')) {
+          // SSE streaming
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data:')) {
+                const data = JSON.parse(line.slice(5).trim());
+                if (line.includes('event:progress') || buffer.includes('event:progress')) {
+                  titleEl.textContent = `生成中... (${data.stage})`;
+                }
+              }
+              if (line.startsWith('data:') && buffer.includes('event:result')) {
+                // handled below
+              }
+            }
+          }
+
+          // Parse final SSE events from full response
+          const fullText = decoder.decode();
+          buffer += fullText;
+          const allLines = (buffer).split('\n');
+          for (let i = 0; i < allLines.length; i++) {
+            if (allLines[i].includes('event: result') || allLines[i].includes('event:result')) {
+              const dataLine = allLines[i+1] || allLines.find(l => l.startsWith('data:') && l.includes('"slides"'));
+              if (dataLine && dataLine.startsWith('data:')) {
+                presentation = JSON.parse(dataLine.slice(5).trim());
+              }
+            }
+          }
+          if (!presentation || !presentation.slides) {
+            throw new Error('Failed to parse SSE response');
+          }
+        } else {
+          // Fallback: regular JSON
+          presentation = await res.json();
+        }
+
+        titleEl.textContent = presentation.title;
+        selectSlide(0);
+      } catch (err) {
+        titleEl.textContent = 'Error: ' + err.message;
+        console.error(err);
+        // Fallback to sync endpoint
+        try {
+          const res = await fetch(`${API}/api/generate/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, language })
+          });
+          presentation = await res.json();
+          titleEl.textContent = presentation.title;
+          selectSlide(0);
+        } catch (e) {
+          titleEl.textContent = 'Generation failed';
+        }
+      }
+    }
+
+    function renderSlideHtml(slide) {
+      // Client-side simple template rendering (mirrors server Nunjucks)
+      const tmpl = templates.find(t => t.id === slide.templateId);
+      if (!tmpl) return '<div style="padding:40px;color:red;">Template not found</div>';
+      // Use server to render
+      return `<!DOCTYPE html><html><head><style>*{margin:0;padding:0;box-sizing:border-box;}</style></head><body>${simpleRender(slide, presentation.theme)}</body></html>`;
+    }
+
+    function simpleRender(slide, theme) {
+      // Fetch rendered HTML from server synchronously via srcdoc trick
+      // Actually, let's do simple client-side rendering for responsiveness
+      const t = slide.templateId;
+      const c = slide.content;
+      const th = theme;
+
+      if (t === 'intro') return introHtml(c, th);
+      if (t === 'bullets') return bulletsHtml(c, th);
+      if (t === 'two-column') return twoColumnHtml(c, th);
+      if (t === 'image-text') return imageTextHtml(c, th);
+      if (t === 'ending') return endingHtml(c, th);
+      return `<div style="width:1920px;height:1080px;display:flex;align-items:center;justify-content:center;background:${th.backgroundColor};color:${th.textColor};font-size:48px;">Unknown template: ${t}</div>`;
+    }
+
+    function introHtml(c, th) {
+      return `<div style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'${th.headingFont}',sans-serif;background:${th.backgroundColor};">
+        <div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 120px;">
+          <div style="flex:1;display:flex;flex-direction:column;gap:24px;">
+            <h1 style="font-size:72px;font-weight:700;color:${th.textColor};margin:0;line-height:1.1;">${c.title||''}</h1>
+            <div style="width:80px;height:4px;background:${th.primaryColor};border-radius:2px;"></div>
+            <p style="font-size:24px;color:${th.textColor};opacity:0.7;margin:0;max-width:600px;line-height:1.6;">${c.subtitle||''}</p>
+            ${c.author ? `<div style="margin-top:40px;display:flex;align-items:center;gap:16px;">
+              <div style="width:48px;height:48px;border-radius:50%;background:${th.primaryColor};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:18px;">${(c.author||'')[0]||''}</div>
+              <div><div style="font-size:18px;font-weight:600;color:${th.textColor};">${c.author}</div>${c.date?`<div style="font-size:14px;color:${th.textColor};opacity:0.5;">${c.date}</div>`:''}</div>
+            </div>` : ''}
+          </div>
+          ${c.imageUrl ? `<div style="flex:1;display:flex;justify-content:center;"><img src="${c.imageUrl}" style="max-width:100%;max-height:700px;border-radius:16px;object-fit:cover;" /></div>` : ''}
+        </div>
+      </div>`;
+    }
+
+    function bulletsHtml(c, th) {
+      const items = (c.items||[]).map((item, i) => `
+        <div style="display:flex;align-items:flex-start;gap:20px;">
+          <div style="width:44px;height:44px;border-radius:10px;background:${th.primaryColor};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px;flex-shrink:0;">${i+1}</div>
+          <div style="flex:1;">${item.heading?`<div style="font-size:24px;font-weight:600;color:${th.textColor};margin-bottom:6px;">${item.heading}</div>`:''}<div style="font-size:20px;color:${th.textColor};opacity:0.7;line-height:1.6;">${item.text||''}</div></div>
+        </div>`).join('');
+      return `<div style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'${th.bodyFont}',sans-serif;background:${th.backgroundColor};">
+        <div style="position:absolute;top:80px;left:120px;right:120px;"><h2 style="font-size:48px;font-weight:700;color:${th.textColor};margin:0;">${c.title||''}</h2><div style="width:60px;height:3px;background:${th.primaryColor};margin-top:16px;border-radius:2px;"></div></div>
+        <div style="position:absolute;top:220px;bottom:80px;left:120px;right:120px;display:flex;flex-direction:column;justify-content:center;gap:32px;">${items}</div>
+      </div>`;
+    }
+
+    function twoColumnHtml(c, th) {
+      const leftItems = (c.leftItems||[]).map(item => `<div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;"><div style="width:8px;height:8px;border-radius:50%;background:${th.primaryColor};margin-top:8px;flex-shrink:0;"></div><span>${item}</span></div>`).join('');
+      const rightItems = (c.rightItems||[]).map(item => `<div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;"><div style="width:8px;height:8px;border-radius:50%;background:${th.primaryColor};margin-top:8px;flex-shrink:0;"></div><span>${item}</span></div>`).join('');
+      return `<div style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'${th.bodyFont}',sans-serif;background:${th.backgroundColor};">
+        <div style="position:absolute;top:80px;left:120px;right:120px;"><h2 style="font-size:48px;font-weight:700;color:${th.textColor};margin:0;">${c.title||''}</h2><div style="width:60px;height:3px;background:${th.primaryColor};margin-top:16px;border-radius:2px;"></div></div>
+        <div style="position:absolute;top:220px;bottom:80px;left:120px;right:120px;display:flex;gap:80px;">
+          <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">${c.leftTitle?`<h3 style="font-size:28px;font-weight:600;color:${th.textColor};margin:0 0 16px 0;">${c.leftTitle}</h3>`:''}<div style="font-size:20px;color:${th.textColor};opacity:0.8;line-height:1.8;">${leftItems}</div></div>
+          <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">${c.rightTitle?`<h3 style="font-size:28px;font-weight:600;color:${th.textColor};margin:0 0 16px 0;">${c.rightTitle}</h3>`:''}<div style="font-size:20px;color:${th.textColor};opacity:0.8;line-height:1.8;">${rightItems}</div></div>
+        </div>
+      </div>`;
+    }
+
+    function imageTextHtml(c, th) {
+      const bullets = (c.bullets||[]).map(b => `<div style="display:flex;align-items:center;gap:12px;font-size:18px;color:${th.textColor};opacity:0.8;"><div style="width:6px;height:6px;border-radius:50%;background:${th.primaryColor};"></div><span>${b}</span></div>`).join('');
+      return `<div style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'${th.bodyFont}',sans-serif;background:${th.backgroundColor};">
+        <div style="position:absolute;inset:0;display:flex;">
+          <div style="flex:1;padding:100px 80px;display:flex;flex-direction:column;justify-content:center;gap:24px;">
+            <h2 style="font-size:44px;font-weight:700;color:${th.textColor};margin:0;line-height:1.2;">${c.title||''}</h2>
+            <div style="width:60px;height:3px;background:${th.primaryColor};border-radius:2px;"></div>
+            <p style="font-size:20px;color:${th.textColor};opacity:0.75;line-height:1.7;margin:0;">${c.description||''}</p>
+            ${bullets?`<div style="margin-top:16px;display:flex;flex-direction:column;gap:12px;">${bullets}</div>`:''}
+          </div>
+          <div style="flex:1;position:relative;"><img src="${c.imageUrl||''}" style="width:100%;height:100%;object-fit:cover;" /></div>
+        </div>
+      </div>`;
+    }
+
+    function endingHtml(c, th) {
+      return `<div style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'${th.headingFont}',sans-serif;background:${th.primaryColor};">
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:24px;">
+          <h1 style="font-size:72px;font-weight:700;color:#ffffff;margin:0;">${c.title||''}</h1>
+          ${c.subtitle?`<p style="font-size:28px;color:#ffffff;opacity:0.8;margin:0;">${c.subtitle}</p>`:''}
+          ${c.contactInfo?`<div style="margin-top:40px;padding:24px 48px;background:rgba(255,255,255,0.15);border-radius:12px;"><p style="font-size:20px;color:#ffffff;margin:0;">${c.contactInfo}</p></div>`:''}
+        </div>
+      </div>`;
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function escapeAttr(str) {
+      return (str||'').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Handle window resize
+    window.addEventListener('resize', () => { if(presentation) renderPreview(); });
+
+    init();
+  </script>
+</body>
+</html>

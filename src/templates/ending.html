@@ -1,0 +1,13 @@
+<div class="slide" style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:'{{theme.headingFont}}',sans-serif;background:{{theme.primaryColor}};">
+  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:24px;">
+    <h1 style="font-size:72px;font-weight:700;color:#ffffff;margin:0;">{{content.title}}</h1>
+    {% if content.subtitle %}
+    <p style="font-size:28px;color:#ffffff;opacity:0.8;margin:0;">{{content.subtitle}}</p>
+    {% endif %}
+    {% if content.contactInfo %}
+    <div style="margin-top:40px;padding:24px 48px;background:rgba(255,255,255,0.15);border-radius:12px;backdrop-filter:blur(8px);">
+      <p style="font-size:20px;color:#ffffff;margin:0;">{{content.contactInfo}}</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
