@@ -9,7 +9,6 @@ import { SYSTEM_SKILL } from '../agent/system-skill.js'
 import { runAgentLoop } from '../agent/agent-loop.js'
 import { createResearchRound, addResearchItem, updateRoundSummary, getProjectResearchSummary } from '../agent/research-store.js'
 import type { Theme } from '../types.js'
-import type { LLMMessage } from '../agent/providers/types.js'
 
 
 const app = new Hono()
@@ -117,15 +116,13 @@ No pages generated yet. Start with Page 1.`
   const systemPrompt = SYSTEM_SKILL + `\n\n## Available Templates\n${templateInfo}` + contextSection +
     researchContext +
     `\n\n## Language\nRespond and generate content in: ${project.language ?? '中文'}` +
-    `\n\nIMPORTANT: You have tools available. If the user asks about a topic you're not fully confident about, use web_search to research before proposing an outline. When you're ready to give your final response, use the analyze_and_plan tool with your JSON response.`
+    `\n\nUse web_search when you need current/factual info. Respond with valid JSON.`
 
-  const llmMessages: LLMMessage[] = [
-    { role: 'system', content: systemPrompt },
-    ...history.slice(-10).map(m => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    })),
-  ]
+  // Build user prompt with conversation history
+  const historyContext = history.slice(-10).map(m => `[${m.role}]: ${m.content}`).join('\n\n')
+  const fullUserMessage = historyContext
+    ? `Previous conversation:\n${historyContext}\n\nCurrent message: ${userMessage}`
+    : userMessage
 
   return streamSSE(c, async (stream) => {
     try {
@@ -133,7 +130,7 @@ No pages generated yet. Start with Page 1.`
       let currentRound: any = null
       let lastSearchItemId: string | null = null
 
-      const rawResult = await runAgentLoop(llmMessages, async (event) => {
+      const rawResult = await runAgentLoop(systemPrompt, fullUserMessage, async (event) => {
         if (event.type === 'thinking') {
           await stream.writeSSE({ data: JSON.stringify({ type: 'progress', stage: 'thinking' }), event: 'message' })
         } else if (event.type === 'tool_call') {
@@ -156,24 +153,15 @@ No pages generated yet. Start with Page 1.`
         }
       })
 
-      // Parse the result — rawResult may be string (JSON) or already an object
+      // Parse the result
       let parsed: any
       if (typeof rawResult === 'object' && rawResult !== null) {
-        // Already parsed (from Converse API object input)
         parsed = rawResult
       } else {
         const resultStr = String(rawResult)
-        try {
-          parsed = JSON.parse(cleanJson(resultStr))
-        } catch {
-          // Last resort: try to find JSON object in the string
-          const match = resultStr.match(/\{[\s\S]*"action"\s*:\s*"[^"]+[\s\S]*\}/)
-          if (match) {
-            try { parsed = JSON.parse(match[0]) } catch { parsed = null }
-          }
-          if (!parsed) {
-            parsed = { action: 'chat', message: resultStr }
-          }
+        parsed = parseJsonPermissive(resultStr)
+        if (!parsed) {
+          parsed = { action: 'chat', message: resultStr }
         }
       }
       console.log('[chat] parsed action:', parsed.action)
@@ -340,6 +328,22 @@ function cleanJson(text: string): string {
   const lastBrace = s.lastIndexOf('}')
   if (lastBrace >= 0 && lastBrace < s.length - 1) s = s.slice(0, lastBrace + 1)
   return s
+}
+
+function parseJsonPermissive(text: string): any {
+  const cleaned = cleanJson(text)
+  // Try strict parse first
+  try { return JSON.parse(cleaned) } catch {}
+  // Try fixing common issues: unescaped quotes inside strings
+  // Replace Chinese quotes that break JSON
+  const fixed = cleaned
+    .replace(/(?<=:\s*"[^"]*)"(?=[^"]*"[^"]*(?:,|\}))/g, '\\"')
+  try { return JSON.parse(fixed) } catch {}
+  // Last resort: eval-safe approach with Function
+  try {
+    return new Function(`return (${cleaned})`)()
+  } catch {}
+  return null
 }
 
 // Export project

@@ -1,12 +1,11 @@
-// @ts-nocheck
-import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
-import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod'
+// @ts-nocheck — SDK types are complex, using any for pragmatism
+import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod/v4'
-import type { LLMMessage } from './providers/types.js'
+import path from 'node:path'
 import { executeWebSearch, executeReadUrl } from './tool-executors.js'
 
 export interface AgentEvent {
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'text' | 'done'
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'text' | 'done' | 'error'
   tool?: string
   input?: any
   result?: string
@@ -15,88 +14,104 @@ export interface AgentEvent {
 
 export type AgentEventCallback = (event: AgentEvent) => Promise<void>
 
-const getClient = () => new AnthropicBedrock({
-  awsRegion: process.env.AWS_REGION ?? 'us-east-1',
-})
-
-const MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-sonnet-4-6'
+const PROJECT_ROOT = path.resolve(process.cwd())
+const SKILLS_DIR = path.join(PROJECT_ROOT, 'skills')
 
 export async function runAgentLoop(
-  messages: LLMMessage[],
+  systemPrompt: string,
+  userMessage: string,
   onEvent: AgentEventCallback,
-): Promise<any> {
-  const client = getClient()
-
-  const systemPrompt = messages.find(m => m.role === 'system')?.content ?? ''
-  const chatMessages = messages
-    .filter(m => m.role !== 'system')
-    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-
-  await onEvent({ type: 'thinking' })
-
-  const webSearchTool = betaZodTool({
-    name: 'web_search',
-    description: 'Search the internet for information about a topic. Use when you need current/factual information.',
-    inputSchema: z.object({
-      query: z.string().describe('Search query'),
-    }),
-    run: async ({ query }) => {
-      await onEvent({ type: 'tool_call', tool: 'web_search', input: { query } })
-      const result = await executeWebSearch(query)
+): Promise<string> {
+  // Define custom tools using the SDK's tool() helper
+  const webSearchTool = tool(
+    'web_search',
+    'Search the internet for information. Use when you need current/factual info.',
+    { query: z.string().describe('Search query') },
+    async ({ query: q }) => {
+      await onEvent({ type: 'tool_call', tool: 'web_search', input: { query: q } })
+      const result = await executeWebSearch(q)
       await onEvent({ type: 'tool_result', tool: 'web_search', result: result.slice(0, 200) })
-      return result
+      return { content: [{ type: 'text' as const, text: result }] }
     },
-  })
+  )
 
-  const readUrlTool = betaZodTool({
-    name: 'read_url',
-    description: 'Read and extract text content from a URL.',
-    inputSchema: z.object({
-      url: z.string().describe('URL to read'),
-    }),
-    run: async ({ url }) => {
+  const readUrlTool = tool(
+    'read_url',
+    'Read and extract text content from a URL.',
+    { url: z.string().describe('URL to read') },
+    async ({ url }) => {
       await onEvent({ type: 'tool_call', tool: 'read_url', input: { url } })
       const result = await executeReadUrl(url)
       await onEvent({ type: 'tool_result', tool: 'read_url', result: result.slice(0, 200) })
-      return result
+      return { content: [{ type: 'text' as const, text: result }] }
+    },
+  )
+
+  // Create MCP server with our tools
+  const pptrToolsServer = createSdkMcpServer({
+    name: 'pptr-tools',
+    alwaysLoad: true,
+    tools: [webSearchTool, readUrlTool],
+  })
+
+  await onEvent({ type: 'thinking' })
+
+  let fullResponse = ''
+
+  const conversation = query({
+    prompt: userMessage,
+    options: {
+      cwd: PROJECT_ROOT,
+      systemPrompt,
+      model: process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-sonnet-4-6',
+      effort: 'high',
+      maxTurns: 15,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      tools: [],
+      mcpServers: { 'pptr-tools': pptrToolsServer },
+      env: {
+        ...process.env as Record<string, string>,
+        CLAUDE_CODE_USE_BEDROCK: '1',
+        AWS_REGION: process.env.AWS_REGION ?? 'us-east-1',
+      },
+      persistSession: false,
+      settingSources: [],
     },
   })
 
-  // Tool Runner handles the loop: call API → detect tool_use → run function → feed result back → repeat
-  // When Claude stops calling tools and just outputs text, the loop ends
-  const finalMessage = await client.beta.messages.toolRunner({
-    model: MODEL_ID,
-    max_tokens: 4096,
-    system: systemPrompt,
-    tools: [webSearchTool, readUrlTool],
-    messages: chatMessages,
-  })
+  for await (const message of conversation) {
+    switch (message.type) {
+      case 'assistant': {
+        // Full assistant message with content blocks
+        const content = message.message?.content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'text' && block.text) {
+              fullResponse = block.text
+              await onEvent({ type: 'text', content: block.text })
+            }
+          }
+        }
+        break
+      }
 
-  await onEvent({ type: 'done' })
-
-  // Extract final text response (the JSON output from AI)
-  for (const block of finalMessage.content) {
-    if (block.type === 'text' && block.text.trim()) {
-      try {
-        return JSON.parse(cleanJson(block.text))
-      } catch {
-        return block.text
+      case 'result': {
+        // Final result
+        if (message.subtype === 'success') {
+          if (message.result && !fullResponse) {
+            fullResponse = message.result
+          }
+        } else if (message.subtype?.startsWith('error')) {
+          const errMsg = message.error ?? message.result ?? 'Agent error'
+          await onEvent({ type: 'error', content: errMsg })
+          if (!fullResponse) fullResponse = JSON.stringify({ action: 'chat', message: `Error: ${errMsg}` })
+        }
+        break
       }
     }
   }
 
-  return { action: 'chat', message: 'No response generated.' }
-}
-
-function cleanJson(text: string): string {
-  let s = text.trim()
-  if (s.startsWith('```json')) s = s.slice(7)
-  else if (s.startsWith('```')) s = s.slice(3)
-  if (s.endsWith('```')) s = s.slice(0, -3)
-  s = s.trim()
-  const firstBrace = s.indexOf('{')
-  if (firstBrace > 0) s = s.slice(firstBrace)
-  const lastBrace = s.lastIndexOf('}')
-  if (lastBrace >= 0 && lastBrace < s.length - 1) s = s.slice(0, lastBrace + 1)
-  return s
+  await onEvent({ type: 'done' })
+  return fullResponse
 }
