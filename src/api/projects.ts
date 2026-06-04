@@ -92,8 +92,19 @@ app.post('/:id/chat', async (c) => {
   if (currentSlides.length > 0) {
     contextSection = `\n\n## Current Presentation State
 Title: "${project.title}"
-Slides (${currentSlides.length}):
-${currentSlides.map(s => `  [${s.index}] template="${s.templateId}" title="${(s.content as any)?.title ?? ''}"`).join('\n')}`
+Total pages generated: ${currentSlides.length}
+Slides:
+${currentSlides.map(s => `  [Page ${s.index + 1}] template="${s.templateId}" title="${(s.content as any)?.title ?? ''}"`).join('\n')}
+
+Next page to generate: Page ${currentSlides.length + 1}`
+  } else if (project.outline) {
+    const outline = project.outline as any
+    contextSection = `\n\n## Confirmed Outline (ready for Phase 2)
+Title: "${outline.title ?? project.title}"
+Pages planned: ${outline.slides?.length ?? 0}
+${(outline.slides ?? []).map((s: any, i: number) => `  [Page ${i + 1}] ${s.title}`).join('\n')}
+
+No pages generated yet. Start with Page 1.`
   }
 
   // Inject existing research
@@ -185,7 +196,7 @@ ${currentSlides.map(s => `  [${s.index}] template="${s.templateId}" title="${(s.
         await stream.writeSSE({ data: JSON.stringify({ type: 'text', content: chatContent }), event: 'message' })
         await db.insert(schema.messages).values({ projectId, role: 'assistant', content: chatContent })
 
-      } else if (parsed.action === 'generate') {
+      } else if (parsed.action === 'generate' || parsed.action === 'generate_all') {
         const aiTheme: Theme = {
           primaryColor: parsed.theme?.primaryColor ?? '#6366f1',
           backgroundColor: parsed.theme?.backgroundColor ?? '#ffffff',
@@ -242,8 +253,68 @@ ${currentSlides.map(s => `  [${s.index}] template="${s.templateId}" title="${(s.
         await stream.writeSSE({ data: JSON.stringify({ type: 'slides_update', slides: slidesForFrontend }), event: 'message' })
         await db.insert(schema.messages).values({ projectId, role: 'assistant', content: responseText, metadata: { slides: slidesForFrontend } })
 
+      } else if (parsed.action === 'generate_slide') {
+        // Single page generation (Phase 2 - page by page)
+        const slideIndex = parsed.slideIndex ?? currentSlides.length
+        const templateId = parsed.templateId ?? 'bullets'
+        const content = parsed.content ?? { title: 'Untitled' }
+        const speakerNote = parsed.speakerNote ?? null
+
+        // Upsert slide at this index
+        const existing = currentSlides.find(s => s.index === slideIndex)
+        if (existing) {
+          await db.update(schema.slides).set({
+            templateId, content, speakerNote, updatedAt: new Date(),
+          }).where(eq(schema.slides.id, existing.id))
+        } else {
+          await db.insert(schema.slides).values({
+            projectId, index: slideIndex, templateId, content, speakerNote,
+          })
+        }
+
+        // Update project status
+        await db.update(schema.projects).set({ status: 'generating', updatedAt: new Date() }).where(eq(schema.projects.id, projectId))
+
+        // Send slide update to frontend
+        const allSlides = await db.select().from(schema.slides)
+          .where(eq(schema.slides.projectId, projectId))
+          .orderBy(asc(schema.slides.index))
+        const slidesForFrontend = allSlides.map(s => ({
+          index: s.index, templateId: s.templateId, content: s.content,
+        }))
+        await stream.writeSSE({ data: JSON.stringify({ type: 'slides_update', slides: slidesForFrontend }), event: 'message' })
+
+        // Send chat message
+        const msg = parsed.message ?? `第 ${slideIndex + 1} 页已生成。`
+        await stream.writeSSE({ data: JSON.stringify({ type: 'text', content: msg }), event: 'message' })
+        await db.insert(schema.messages).values({ projectId, role: 'assistant', content: msg })
+
+      } else if (parsed.action === 'modify_slide') {
+        // Modify an existing page
+        const slideIndex = parsed.slideIndex ?? 0
+        const existing = currentSlides.find(s => s.index === slideIndex)
+        if (existing) {
+          const updatedContent = { ...(existing.content as any), ...parsed.content }
+          await db.update(schema.slides).set({
+            content: updatedContent, updatedAt: new Date(),
+          }).where(eq(schema.slides.id, existing.id))
+
+          // Send updated slides
+          const allSlides = await db.select().from(schema.slides)
+            .where(eq(schema.slides.projectId, projectId))
+            .orderBy(asc(schema.slides.index))
+          const slidesForFrontend = allSlides.map(s => ({
+            index: s.index, templateId: s.templateId, content: s.content,
+          }))
+          await stream.writeSSE({ data: JSON.stringify({ type: 'slides_update', slides: slidesForFrontend }), event: 'message' })
+        }
+
+        const msg = parsed.message ?? `第 ${slideIndex + 1} 页已更新。`
+        await stream.writeSSE({ data: JSON.stringify({ type: 'text', content: msg }), event: 'message' })
+        await db.insert(schema.messages).values({ projectId, role: 'assistant', content: msg })
+
       } else if (parsed.action === 'modify') {
-        const msg = parsed.message ?? '修改功能开发中，请稍后重试。'
+        const msg = parsed.message ?? '请告诉我具体要修改哪一页的什么内容。'
         await stream.writeSSE({ data: JSON.stringify({ type: 'text', content: msg }), event: 'message' })
         await db.insert(schema.messages).values({ projectId, role: 'assistant', content: msg })
       }
