@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface ToolCall {
   tool: string
@@ -28,6 +29,7 @@ export default function CreateSession() {
   const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [slides, setSlides] = useState<Slide[]>([])
+  const [theme, setTheme] = useState<any>({ primaryColor: '#6366f1', backgroundColor: '#ffffff', textColor: '#1f2937', headingFont: 'Inter', bodyFont: 'Inter' })
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [currentSlide, setCurrentSlide] = useState(0)
@@ -35,9 +37,12 @@ export default function CreateSession() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    // Load existing messages and slides
+    // Load existing messages, slides, and project theme
     fetch(`/api/projects/${id}/messages`).then(r => r.json()).then(setMessages).catch(() => {})
     fetch(`/api/projects/${id}/slides`).then(r => r.json()).then(setSlides).catch(() => {})
+    fetch(`/api/projects/${id}`).then(r => r.json()).then(p => {
+      if (p.theme) setTheme(p.theme)
+    }).catch(() => {})
   }, [id])
 
   useEffect(() => {
@@ -96,17 +101,22 @@ export default function CreateSession() {
             const data = JSON.parse(dataLine.slice(5).trim())
             if (data.type === 'text') {
               let content = data.content
-              // Guard: if content is still raw JSON with action field, extract message
-              if (typeof content === 'string' && content.trimStart().startsWith('{') && content.includes('"action"')) {
+              // Guard: strip raw JSON / code fences if AI leaked them
+              if (typeof content === 'string' && content.includes('"action"')) {
                 try {
-                  const inner = JSON.parse(content)
-                  if (inner.message) content = inner.message
+                  let cleaned = content.trim()
+                  if (cleaned.startsWith('```')) cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim()
+                  if (cleaned.startsWith('{')) {
+                    const inner = JSON.parse(cleaned)
+                    if (inner.message) content = inner.message
+                  }
                 } catch {}
               }
               assistantContent = content
               updateMsg({ content: assistantContent, toolCalls: [...toolCalls] })
             } else if (data.type === 'slides_update') {
               setSlides(data.slides)
+              if (data.theme) setTheme(data.theme)
             } else if (data.type === 'progress') {
               switch (data.stage) {
                 case 'thinking':
@@ -151,6 +161,7 @@ export default function CreateSession() {
               updateMsg({ content: assistantContent, toolCalls: [...toolCalls] })
             } else if (data.type === 'slides_update') {
               setSlides(data.slides)
+              if (data.theme) setTheme(data.theme)
             }
           } catch {}
         }
@@ -224,7 +235,7 @@ export default function CreateSession() {
                     )}
                     {msg.content && (
                       <div className="prose prose-sm prose-invert prose-p:my-1 prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1 prose-headings:my-2 prose-headings:text-slate-100 max-w-none">
-                        <Markdown>{msg.content}</Markdown>
+                        <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
                       </div>
                     )}
                   </div>
@@ -297,11 +308,11 @@ export default function CreateSession() {
         </div>
 
         {/* Canvas */}
-        <div className="flex-1 flex items-center justify-center bg-slate-950 p-8">
+        <div className="flex-1 flex items-center justify-center p-6" style={{ background: 'radial-gradient(circle at center, #1e293b 0%, #0f172a 100%)' }}>
           {slides.length === 0 ? (
             <div className="text-slate-600 text-lg">在左侧对话中描述你的需求，AI 将在这里实时生成 PPT</div>
           ) : (
-            <CanvasPreview srcDoc={getSlidePreviewHtml(slides[currentSlide])} />
+            <CanvasPreview srcDoc={getSlidePreviewHtml(slides[currentSlide], theme)} />
           )}
         </div>
 
@@ -317,7 +328,7 @@ export default function CreateSession() {
                 }`}
               >
                 <iframe
-                  srcDoc={getSlidePreviewHtml(slide)}
+                  srcDoc={getSlidePreviewHtml(slide, theme)}
                   className="w-[1920px] h-[1080px] border-none pointer-events-none"
                   style={{ transform: 'scale(0.058)', transformOrigin: 'top left' }}
                 />
@@ -382,7 +393,7 @@ function CanvasPreview({ srcDoc }: { srcDoc: string }) {
   }, [])
 
   return (
-    <div ref={containerRef} className="w-full max-w-4xl aspect-video bg-white rounded-lg shadow-2xl overflow-hidden relative">
+    <div ref={containerRef} className="w-full max-w-full aspect-video bg-white rounded-lg shadow-2xl overflow-hidden relative">
       <iframe
         ref={iframeRef}
         srcDoc={srcDoc}
@@ -393,12 +404,96 @@ function CanvasPreview({ srcDoc }: { srcDoc: string }) {
   )
 }
 
-function getSlidePreviewHtml(slide: Slide | undefined): string {
+function getSlidePreviewHtml(slide: Slide | undefined, theme?: any): string {
   if (!slide) return ''
-  return `<!DOCTYPE html><html><body style="margin:0;display:flex;align-items:center;justify-content:center;width:1920px;height:1080px;font-family:Inter,sans-serif;background:#fff;">
-    <div style="text-align:center;padding:80px;">
-      <h1 style="font-size:48px;color:#1f2937;">${slide.content?.title || 'Slide ' + (slide.index + 1)}</h1>
-      <p style="font-size:24px;color:#6b7280;margin-top:16px;">${slide.templateId}</p>
-    </div>
-  </body></html>`
+  const t = theme ?? { primaryColor: '#6366f1', backgroundColor: '#ffffff', textColor: '#1f2937', headingFont: 'Inter', bodyFont: 'Inter' }
+  const c = slide.content ?? {}
+
+  // Render based on template
+  switch (slide.templateId) {
+    case 'intro':
+      return wrapSlide(`
+        <div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 120px;">
+          <div style="flex:1;display:flex;flex-direction:column;gap:24px;">
+            <h1 style="font-size:72px;font-weight:700;color:${t.textColor};margin:0;line-height:1.1;">${c.title||''}</h1>
+            <div style="width:80px;height:4px;background:${t.primaryColor};border-radius:2px;"></div>
+            <p style="font-size:24px;color:${t.textColor};opacity:0.7;margin:0;max-width:600px;line-height:1.6;">${c.subtitle||''}</p>
+            ${c.author ? `<div style="margin-top:40px;font-size:18px;color:${t.textColor};opacity:0.6;">${c.author}${c.date ? ' · '+c.date : ''}</div>` : ''}
+          </div>
+          ${c.imageUrl ? `<div style="flex:1;display:flex;justify-content:center;align-items:center;"><img src="${c.imageUrl}" style="max-width:100%;max-height:700px;border-radius:16px;object-fit:cover;" /></div>` : ''}
+        </div>`, t)
+
+    case 'bullets':
+      const items = c.items || c.points || []
+      return wrapSlide(`
+        <div style="position:absolute;top:80px;left:120px;right:120px;">
+          <h2 style="font-size:48px;font-weight:700;color:${t.textColor};margin:0;">${c.title||''}</h2>
+          <div style="width:60px;height:3px;background:${t.primaryColor};margin-top:16px;border-radius:2px;"></div>
+        </div>
+        <div style="position:absolute;top:200px;bottom:80px;left:120px;right:120px;display:flex;flex-direction:column;justify-content:center;gap:28px;">
+          ${items.map((item: any, i: number) => `
+            <div style="display:flex;align-items:flex-start;gap:20px;">
+              <div style="width:40px;height:40px;border-radius:10px;background:${t.primaryColor};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px;flex-shrink:0;">${i+1}</div>
+              <div style="flex:1;">
+                ${item.heading ? `<div style="font-size:22px;font-weight:600;color:${t.textColor};margin-bottom:4px;">${item.heading}</div>` : ''}
+                <div style="font-size:18px;color:${t.textColor};opacity:0.7;line-height:1.5;">${item.text || item.description || ''}</div>
+              </div>
+            </div>`).join('')}
+        </div>`, t)
+
+    case 'two-column':
+      const leftItems = c.leftItems || c.leftPoints || []
+      const rightItems = c.rightItems || c.rightPoints || []
+      return wrapSlide(`
+        <div style="position:absolute;top:80px;left:120px;right:120px;">
+          <h2 style="font-size:48px;font-weight:700;color:${t.textColor};margin:0;">${c.title||''}</h2>
+          <div style="width:60px;height:3px;background:${t.primaryColor};margin-top:16px;border-radius:2px;"></div>
+        </div>
+        <div style="position:absolute;top:200px;bottom:80px;left:120px;right:120px;display:flex;gap:80px;">
+          <div style="flex:1;">
+            ${c.leftTitle ? `<h3 style="font-size:24px;font-weight:600;color:${t.textColor};margin:0 0 16px;">${c.leftTitle}</h3>` : ''}
+            ${leftItems.map((item: any) => `<div style="display:flex;gap:10px;margin-bottom:14px;font-size:18px;color:${t.textColor};opacity:0.8;line-height:1.5;"><span style="color:${t.primaryColor};">•</span><span>${typeof item === 'string' ? item : item.text || item}</span></div>`).join('')}
+          </div>
+          <div style="flex:1;">
+            ${c.rightTitle ? `<h3 style="font-size:24px;font-weight:600;color:${t.textColor};margin:0 0 16px;">${c.rightTitle}</h3>` : ''}
+            ${rightItems.map((item: any) => `<div style="display:flex;gap:10px;margin-bottom:14px;font-size:18px;color:${t.textColor};opacity:0.8;line-height:1.5;"><span style="color:${t.primaryColor};">•</span><span>${typeof item === 'string' ? item : item.text || item}</span></div>`).join('')}
+          </div>
+        </div>`, t)
+
+    case 'image-text':
+      const bullets = c.bullets || []
+      return wrapSlide(`
+        <div style="position:absolute;inset:0;display:flex;">
+          <div style="flex:1;padding:100px 80px;display:flex;flex-direction:column;justify-content:center;gap:20px;">
+            <h2 style="font-size:44px;font-weight:700;color:${t.textColor};margin:0;">${c.title||''}</h2>
+            <div style="width:60px;height:3px;background:${t.primaryColor};border-radius:2px;"></div>
+            ${c.description ? `<p style="font-size:18px;color:${t.textColor};opacity:0.7;line-height:1.6;">${c.description}</p>` : ''}
+            ${bullets.length ? `<div style="display:flex;flex-direction:column;gap:10px;">${bullets.map((b: any) => `<div style="font-size:16px;color:${t.textColor};opacity:0.8;display:flex;gap:8px;"><span style="color:${t.primaryColor};">•</span><span>${typeof b === 'string' ? b : b.text || b}</span></div>`).join('')}</div>` : ''}
+          </div>
+          <div style="flex:1;background:#f0f0f0;display:flex;align-items:center;justify-content:center;">
+            ${c.imageUrl ? `<img src="${c.imageUrl}" style="width:100%;height:100%;object-fit:cover;" />` : `<div style="color:#999;font-size:24px;">图片区域</div>`}
+          </div>
+        </div>`, t)
+
+    case 'ending':
+      return wrapSlide(`
+        <div style="position:absolute;inset:0;background:${t.primaryColor};display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:24px;">
+          <h1 style="font-size:72px;font-weight:700;color:#fff;margin:0;">${c.title||''}</h1>
+          ${c.subtitle ? `<p style="font-size:28px;color:#fff;opacity:0.8;margin:0;">${c.subtitle}</p>` : ''}
+          ${c.contactInfo ? `<div style="margin-top:40px;padding:20px 40px;background:rgba(255,255,255,0.15);border-radius:12px;color:#fff;font-size:18px;">${c.contactInfo}</div>` : ''}
+        </div>`, t, true)
+
+    default:
+      return wrapSlide(`
+        <div style="display:flex;align-items:center;justify-content:center;height:100%;">
+          <div style="text-align:center;">
+            <h1 style="font-size:48px;color:${t.textColor};">${c.title || 'Slide ' + (slide.index + 1)}</h1>
+            <p style="font-size:24px;color:#999;margin-top:16px;">${slide.templateId}</p>
+          </div>
+        </div>`, t)
+  }
+}
+
+function wrapSlide(inner: string, theme: any, noDefaultBg = false): string {
+  return `<!DOCTYPE html><html><head><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/></head><body style="margin:0;"><div style="width:1920px;height:1080px;position:relative;overflow:hidden;font-family:Inter,sans-serif;${noDefaultBg ? '' : `background:${theme.backgroundColor};`}">${inner}</div></body></html>`
 }

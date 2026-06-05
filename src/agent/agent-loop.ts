@@ -113,5 +113,41 @@ export async function runAgentLoop(
   }
 
   await onEvent({ type: 'done' })
-  return fullResponse
+
+  // Parse the response — AI may return JSON wrapped in code fences
+  const parsed = tryParseJson(fullResponse)
+  return parsed ?? fullResponse
+}
+
+function tryParseJson(text: string): any {
+  if (!text) return null
+  let s = text.trim()
+  // Strip markdown code fences
+  if (s.startsWith('```json')) s = s.slice(7)
+  else if (s.startsWith('```')) s = s.slice(3)
+  if (s.endsWith('```')) s = s.slice(0, -3)
+  s = s.trim()
+  // Extract JSON object
+  const first = s.indexOf('{')
+  if (first < 0) return null
+  if (first > 0) s = s.slice(first)
+  const last = s.lastIndexOf('}')
+  if (last >= 0 && last < s.length - 1) s = s.slice(0, last + 1)
+  // Try strict JSON first
+  try { return JSON.parse(s) } catch {}
+  // Fix: escape raw newlines inside string values (common with pretty-printed AI output)
+  const fixed = s.replace(/(?<=":[ ]*"[^"]*)\n(?=[^"]*")/g, '\\n')
+  try { return JSON.parse(fixed) } catch {}
+  // Try JSON5 (handles trailing commas, unquoted keys, single quotes, etc.)
+  try {
+    const JSON5 = require('json5')
+    return JSON5.parse(s)
+  } catch {}
+  // Last resort: Function eval
+  try { return new Function(`return (${s})`)() } catch {}
+  console.error('[tryParseJson] ALL parsers failed.')
+  console.error('  First 200:', s.slice(0, 200))
+  console.error('  Last 100:', s.slice(-100))
+  console.error('  Length:', s.length)
+  return null
 }

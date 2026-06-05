@@ -238,7 +238,7 @@ No pages generated yet. Start with Page 1.`
 
         await stream.writeSSE({ data: JSON.stringify({ type: 'text', content: responseText }), event: 'message' })
         const slidesForFrontend = slideResults.map((s: any, i: number) => ({ index: i, templateId: s.templateId, content: s.content }))
-        await stream.writeSSE({ data: JSON.stringify({ type: 'slides_update', slides: slidesForFrontend }), event: 'message' })
+        await stream.writeSSE({ data: JSON.stringify({ type: 'slides_update', slides: slidesForFrontend, theme: aiTheme }), event: 'message' })
         await db.insert(schema.messages).values({ projectId, role: 'assistant', content: responseText, metadata: { slides: slidesForFrontend } })
 
       } else if (parsed.action === 'generate_slide') {
@@ -332,17 +332,13 @@ function cleanJson(text: string): string {
 
 function parseJsonPermissive(text: string): any {
   const cleaned = cleanJson(text)
-  // Try strict parse first
   try { return JSON.parse(cleaned) } catch {}
-  // Try fixing common issues: unescaped quotes inside strings
-  // Replace Chinese quotes that break JSON
-  const fixed = cleaned
-    .replace(/(?<=:\s*"[^"]*)"(?=[^"]*"[^"]*(?:,|\}))/g, '\\"')
-  try { return JSON.parse(fixed) } catch {}
-  // Last resort: eval-safe approach with Function
   try {
-    return new Function(`return (${cleaned})`)()
+    const JSON5 = require('json5')
+    return JSON5.parse(cleaned)
   } catch {}
+  try { return new Function(`return (${cleaned})`)() } catch {}
+  console.error('[parseJsonPermissive] ALL parsers failed. First 200:', cleaned.slice(0, 200))
   return null
 }
 
